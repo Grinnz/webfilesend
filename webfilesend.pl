@@ -15,7 +15,7 @@ my $mercury_url = app->config->{mercury} // die "No mercury broker URL configure
 
 helper generate_channel => sub ($c) {
   my $addr = $c->tx->remote_address // '127.0.0.1';
-  return substr encode_base64url(sha1 rand() . time . \my $dummy . $addr), 0, 8;
+  return substr encode_base64url(sha1 rand() . time . \my $dummy . $addr), 0, 12;
 };
 
 get '/' => 'index';
@@ -77,15 +77,19 @@ __DATA__
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.5.3/dist/css/bootstrap.min.css" integrity="sha384-TX8t27EcRE3e/ihU7zmQxVncDAy5uIKz4rEkgIXeMed4M0jlfIDPvg6uqKI2xXr2" crossorigin="anonymous">
   </head>
   <body>
-    <div class="container" id="main" data-channel="<%= generate_channel %>">
+    <div class="container" id="main" data-channel="<%= generate_channel %>" data-recv-url="<%= url_for('recv')->to_abs %>" data-send-url="<%= url_for('send')->to_abs %>">
       <h1>WebFileSend</h1>
-      <form class="form-inline" v-on:submit.prevent="create_channel" data-url="<%= url_for('recv')->to_abs %>">
+      <form id="recv_form" class="form-inline" v-on:submit.prevent>
         <div class="form-group">
-          <input type="text" class="form-control mr-2" v-model="recv_channel" placeholder="Channel">
-          <button type="submit" class="btn btn-primary">Listen on Channel</button>
+          <input type="text" class="form-control mr-2" v-bind:disabled="listening" v-model="recv_channel" placeholder="Channel">
+          <template v-if="listening">
+            <button v-on:click="close_channel" type="submit" class="btn btn-danger mr-2">Close Channel</button>
+            <span>Listening on <a v-bind:href="'#' + encodeURIComponent(recv_channel)">{{ recv_channel }}</a></span>
+          </template>
+          <button v-else v-on:click="open_channel" type="submit" class="btn btn-success">Open Channel</button>
         </div>
       </form>
-      <form class="form-inline" v-on:submit.prevent="send_to_channel" data-url="<%= url_for('send')->to_abs %>">
+      <form class="form-inline" v-on:submit.prevent="send_to_channel">
         <div class="form-group">
           <input type="text" class="form-control mr-2" v-model="send_channel" placeholder="Channel">
           <input type="file" class="form-control mr-2" id="send_file_input">
@@ -102,35 +106,51 @@ __DATA__
 @@ webfilesend.js
 var recv_ws;
 var send_ws;
+var app_data = { output: '', recv_channel: null, send_channel: null, listening: false };
 var app = new Vue({
   el: '#main',
-  data: { output: '', recv_channel: null, send_channel: null },
+  data: app_data,
   created: function () {
-    this.recv_channel = document.getElementById('main').dataset.channel;
+    app_data.recv_channel = document.getElementById('main').dataset.channel;
     var hash = window.location.hash;
     if (hash !== null) {
-      this.send_channel = hash.substring(1);
+      app_data.send_channel = hash.substring(1);
     }
   },
   methods: {
-    create_channel: function (event) {
-      var ws_url = event.target.dataset.url;
+    open_channel: function (event) {
+      var listen_button = event.target;
+      listen_button.setAttribute('disabled', '');
+      var ws_url = this.$el.dataset.recvUrl;
       if (ws_url.substring(ws_url.length - 1) !== '/') {
         ws_url += '/';
       }
-      ws_url += encodeURIComponent(this.recv_channel);
+      ws_url += encodeURIComponent(app_data.recv_channel);
       recv_ws = new WebSocket(ws_url);
       recv_ws.onerror = function (event) { console.error('WebSocket error:', event); };
       recv_ws.onmessage = function (event) {
-        this.output += event.data;
+        app_data.output += event.data;
+      };
+      recv_ws.onopen = function (event) {
+        app_data.listening = true;
+        listen_button.removeAttribute('disabled');
+      };
+      recv_ws.onclose = function (event) {
+        listen_button.removeAttribute('disabled');
+        app_data.listening = false;
       };
     },
+    close_channel: function (event) {
+      if (recv_ws !== null && recv_ws.readyState !== 3) {
+        recv_ws.close();
+      }
+    },
     send_to_channel: function (event) {
-      var ws_url = event.target.dataset.url;
+      var ws_url = this.$el.dataset.sendUrl;
       if (ws_url.substring(ws_url.length - 1) !== '/') {
         ws_url += '/';
       }
-      ws_url += encodeURIComponent(this.send_channel);
+      ws_url += encodeURIComponent(app_data.send_channel);
       send_ws = new WebSocket(ws_url);
       send_ws.binaryType = 'arraybuffer';
       send_ws.onerror = function (event) { console.error('WebSocket error:', event); };
